@@ -1,6 +1,30 @@
 use crate::display;
 use std::cmp::min;
 
+use crate::instruction::Instruction;
+
+// font set for rendering
+const FONT_SET: [u8; 80] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+];
+
+const FONT_HEAD_ADDRESS: usize = 0x50;
+
 // indexes used to access array set to usize to avoid constant casting to usize
 
 pub struct Chip8 {
@@ -12,13 +36,19 @@ pub struct Chip8 {
     stack_pointer: usize,
     delay_timer: u8,
     sound_timer: u8,
-    pub display: [[u8; 32]; 64],
+    display: [[u8; 32]; 64],
+    keypad: [bool; 16],
 }
 
 impl Chip8 {
     pub fn new() -> Self {
+        let mut memory = [0; 4096];
+        for font in 0..80 {
+            memory[FONT_HEAD_ADDRESS + font] = FONT_SET[font];
+        }
+
         Self {
-            memory: [0; 4096],
+            memory,
             register: [0; 16],
             i_reg: 0,
             program_counter: 0x200, // memory[512]
@@ -27,6 +57,7 @@ impl Chip8 {
             delay_timer: 0,
             sound_timer: 0,
             display: [[0; 32]; 64], // [x][y], 64x32 grid
+            keypad: [false; 16],
         }
     }
 
@@ -63,68 +94,39 @@ impl Chip8 {
         return high << 8 | low;
     }
 
-    pub fn cycle(&mut self) {
-        let opcode = self.fetch();
-        self.program_counter += 2;
-
-        // decode logic, then execute logic
-        // add on 2 here and not later because we save the opcode variable then do decode +
-        // execute, which could lead to changes in PC that if we did at the end would lead to off
-        // by x errors, fetch-advance-decode-execute
-
-        // opcode is u16 (0000 x4)
-        // this shift right takes each bit and shifts it right, with the bits that fall off just
-        // being discarded
-        // now ending up with 0000 0000 0000 (opcode)
-        // these leading zeros are truncated off and we are just left with the trailing opcode
-        //
-        // we take these 'nibbles' and match them to their instruction
-        // however, 0 is an outlier because there are multiple instructions that can start with a
-        // nibble of '0', so we must take the whole opcode in this case and do work
-
-        match opcode >> 12 {
-            0x0 => match opcode {
-                0x00E0 => self.display = [[0; 32]; 64], // clear screen
-                _ => {}
-            },
-            0x1 => {
+    pub fn execute(&mut self, instruction: Instruction) {
+        match instruction {
+            Instruction::ClearScreen => {
+                // clear screen
+                self.display = [[0; 32]; 64];
+            }
+            Instruction::Jump { address } => {
                 // jump to address NNN and execute from there
-                let address = (opcode & 0x0FFF) as usize;
-                self.program_counter = address;
+                self.program_counter = address as usize;
             }
-            0x6 => {
+            Instruction::SetRegister { x, value } => {
                 // set register at index X to value NN
-                let index = get_reg_index_one_nibble(opcode);
-                let operand = (opcode & 0xFF) as u8;
-                self.register[index] = operand;
+                self.register[x] = value;
             }
-            0x7 => {
+            Instruction::AddByte { x, value } => {
                 // add value of NN to register[X]
-                let index = get_reg_index_one_nibble(opcode);
-                let operand = (opcode & 0xFF) as u8;
-                self.register[index] = self.register[index].wrapping_add(operand);
+                self.register[x] = self.register[x].wrapping_add(value);
                 // prevent overflow and wrap back to 0 when value becomes >255
             }
-            0xA => {
+            Instruction::SetIndex { address } => {
                 // set index, used in drawing to say 'start drawing from this index'
-                let address = opcode & 0x0FFF;
                 self.i_reg = address;
-                // only shift when a piece of the bits you want is not on the lower portion
             }
-            0xD => {
+            Instruction::Draw { x, y, height } => {
                 // draw font sprite onto screen, read N bytes starting at memory[I], get xy pos from memory
                 self.register[0xF] = 0;
-                let mut row_count = get_loop_count_operand(opcode);
-
-                let xindex = get_xindex(opcode);
-                let yindex = get_yindex(opcode);
 
                 // mod used to check if value from reg is between 0 - 64, if not we take remainder
                 // and use that as starting x and y position
-                let xpos = (self.register[xindex] % 64) as usize;
-                let ypos = (self.register[yindex] % 32) as usize;
+                let xpos = (self.register[x] % 64) as usize;
+                let ypos = (self.register[y] % 32) as usize;
 
-                row_count = min(row_count, 32 - ypos);
+                let row_count = min(height, 32 - ypos);
 
                 for row in 0..row_count {
                     let sprite_byte = self.memory[self.i_reg as usize + row];
@@ -160,47 +162,31 @@ impl Chip8 {
                 // then simply do XOR on display, but need to make note of collision (if that
                 // display already set to 1)
             }
-            _ => println!("unknown opcode {:04X}", opcode),
+
+            _ => todo!("instruction not implemented yet: {instruction:?}"),
+        }
+    }
+
+    pub fn cycle(&mut self) {
+        // capture PC before advancing so a decode error reports the address of the
+        // instruction that actually failed, not the one after it
+        let pc = self.program_counter;
+
+        let opcode = self.fetch();
+        self.program_counter += 2;
+
+        // add on 2 here and not later because we save the opcode variable then do decode +
+        // execute, which could lead to changes in PC that if we did at the end would lead to off
+        // by x errors, fetch-advance-decode-execute
+
+        // decode logic, then execute logic
+        match Instruction::decode(opcode, pc) {
+            Ok(instruction) => self.execute(instruction),
+            Err(error) => eprintln!("{error}"),
         }
     }
 
     pub fn render(&self) {
         display::render(&self.display);
     }
-}
-
-// get the register index of an opcode that only has 1 leading nibble
-// shift right 8, use bitwise & to get the address of last 4 bits for address
-fn get_reg_index_one_nibble(opcode: u16) -> usize {
-    let reg_index = (opcode >> 8) & 0x0F;
-    return reg_index as usize;
-
-    // how this works with bitwise &
-    // shift 16 bit opcode to 8 bites, left with 0000 0000 n1 n2
-    // then take bitwise & that returns 0 for any 0 value and 1 for both being 1
-    // ex: 0x6108
-    // shift right 8, 0x0061
-    // 0000 0000 0110 0001 0x0061
-    // 0000 0000 0000 1111 0x000F
-    // perform bitwise & op, anything with (0,0), (1,0), or (0,1) gets assigned to 0
-    // else, all other values (1,1) get 1
-    // so final address to return becomes 0000 0001 (0x01) (since we casted to usize)
-}
-
-// index used to read register to get x pos-cord
-fn get_xindex(opcode: u16) -> usize {
-    let xindex = (opcode >> 8) & 0x0F;
-    return xindex as usize;
-}
-
-// index used to read register to get y pos-cord
-fn get_yindex(opcode: u16) -> usize {
-    let yindex = (opcode >> 4) & 0x00F;
-    return yindex as usize;
-}
-
-// number of times we walk memory from draw opcode
-fn get_loop_count_operand(opcode: u16) -> usize {
-    let operand = opcode & 0x000F;
-    return operand as usize;
 }
