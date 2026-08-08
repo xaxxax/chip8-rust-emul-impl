@@ -1,4 +1,5 @@
 use crate::display;
+use std::cmp::min;
 
 // indexes used to access array set to usize to avoid constant casting to usize
 
@@ -42,7 +43,9 @@ impl Chip8 {
         }
     }
 
-    pub fn cycle(&mut self) {
+    fn fetch(&self) -> u16 {
+        // check for program_counter <= 4094 should be here
+
         // combine two u8 int into a u16 by shifting 8 bits to left and concatenating the 'low'
         // bits on the end
         // no use of '+' here because it is not arithmetic (although would lead to same value), use
@@ -54,10 +57,14 @@ impl Chip8 {
         // first casting each to u16 and then doing the combination
         // 0000 0000 0000 0000
 
-        let high_byte = self.memory[self.program_counter] as u16;
-        let low_byte = self.memory[self.program_counter + 1] as u16;
+        let high = self.memory[self.program_counter] as u16;
+        let low = self.memory[self.program_counter + 1] as u16;
 
-        let opcode = high_byte << 8 | low_byte;
+        return high << 8 | low;
+    }
+
+    pub fn cycle(&mut self) {
+        let opcode = self.fetch();
         self.program_counter += 2;
 
         // decode logic, then execute logic
@@ -106,22 +113,36 @@ impl Chip8 {
             }
             0xD => {
                 // draw font sprite onto screen, read N bytes starting at memory[I], get xy pos from memory
-                self.register[0xF] = 1;
-                let row_count = get_loop_count_operand(opcode);
+                self.register[0xF] = 0;
+                let mut row_count = get_loop_count_operand(opcode);
+
+                let xindex = get_xindex(opcode);
+                let yindex = get_yindex(opcode);
+
+                // mod used to check if value from reg is between 0 - 64, if not we take remainder
+                // and use that as starting x and y position
+                let xpos = (self.register[xindex] % 64) as usize;
+                let ypos = (self.register[yindex] % 32) as usize;
+
+                row_count = min(row_count, 32 - ypos);
+
                 for row in 0..row_count {
                     let sprite_byte = self.memory[self.i_reg as usize + row];
-                    for bit in 0..8 {
+
+                    // xpos can be a constant here with xpos < 56 because the bit_count for a
+                    // sprite will always bit 2bytes (8)
+                    let mut bit_count = 8;
+                    if xpos > 56 {
+                        bit_count = 64 - xpos;
+                    }
+
+                    for bit in 0..bit_count {
                         if sprite_byte >> (7 - bit) & 0x01 == 1 {
-                            let xindex = get_xindex(opcode);
-                            let yindex = get_yindex(opcode);
-
-                            let xpos = self.register[xindex];
-                            let ypos = self.register[yindex];
-
-                            if self.display[xpos as usize + bit][ypos as usize + row] == 1 {
+                            if self.display[xpos + bit][ypos + row] == 1 {
                                 self.register[0xF] = 1;
                             }
-                            self.display[xpos as usize + bit][ypos as usize + row] ^= 1;
+
+                            self.display[xpos + bit][ypos + row] ^= 1;
                         }
                     }
                 }
