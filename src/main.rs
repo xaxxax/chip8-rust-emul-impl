@@ -7,6 +7,7 @@
 //
 // Nothing here is wired up on purpose — the learning is in the wiring.
 
+use std::error::Error;
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -17,12 +18,12 @@ mod instruction;
 
 use cpu::Chip8;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     // syntax is :: and not '.new()' because we are calling on type of
     // Chip8 and not on value of anything
 
     let mut machine = Chip8::new();
-    let rom = fs::read("roms/ibm-logo.ch8").unwrap();
+    let rom = fs::read("roms/ibm-logo.ch8")?;
 
     // owned vs borrow here, we use &rom to signify this
 
@@ -33,10 +34,15 @@ fn main() {
     // would become unusable because the memory would be freed
 
     for _ in 0..20 {
-        machine.cycle();
+        if let Err(e) = machine.cycle() {
+            eprint!("{e}");
+            break;
+        }
         machine.render();
         thread::sleep(Duration::from_millis(150));
     }
+
+    Ok(())
 }
 
 // make sure numbers are in same base, 132 byte file (decimal), but indexes are in hex so

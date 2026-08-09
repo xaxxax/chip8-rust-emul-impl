@@ -1,4 +1,4 @@
-use crate::display;
+use crate::{display, instruction::DecodeError};
 use std::cmp::min;
 
 use crate::instruction::Instruction;
@@ -74,7 +74,7 @@ impl Chip8 {
         }
     }
 
-    fn fetch(&self) -> u16 {
+    fn fetch(&self) -> Result<u16, ExecutionError> {
         // check for program_counter <= 4094 should be here
 
         // combine two u8 int into a u16 by shifting 8 bits to left and concatenating the 'low'
@@ -88,13 +88,13 @@ impl Chip8 {
         // first casting each to u16 and then doing the combination
         // 0000 0000 0000 0000
 
-        let high = self.memory[self.program_counter] as u16;
-        let low = self.memory[self.program_counter + 1] as u16;
+        let high = self.read_memory(self.program_counter)? as u16;
+        let low = self.read_memory(self.program_counter + 1)? as u16;
 
-        return high << 8 | low;
+        Ok(high << 8 | low)
     }
 
-    pub fn execute(&mut self, instruction: Instruction) {
+    pub fn execute(&mut self, instruction: Instruction) -> Result<(), ExecutionError> {
         match instruction {
             Instruction::ClearScreen => {
                 // clear screen
@@ -129,7 +129,7 @@ impl Chip8 {
                 let row_count = min(height, 32 - ypos);
 
                 for row in 0..row_count {
-                    let sprite_byte = self.memory[self.i_reg as usize + row];
+                    let sprite_byte = self.read_memory(self.i_reg as usize + row)?;
 
                     // xpos can be a constant here with xpos < 56 because the bit_count for a
                     // sprite will always bit 2bytes (8)
@@ -165,14 +165,16 @@ impl Chip8 {
 
             _ => todo!("instruction not implemented yet: {instruction:?}"),
         }
+
+        Ok(())
     }
 
-    pub fn cycle(&mut self) {
+    pub fn cycle(&mut self) -> Result<(), ExecutionError> {
         // capture PC before advancing so a decode error reports the address of the
         // instruction that actually failed, not the one after it
         let pc = self.program_counter;
 
-        let opcode = self.fetch();
+        let opcode = self.fetch()?;
         self.program_counter += 2;
 
         // add on 2 here and not later because we save the opcode variable then do decode +
@@ -180,13 +182,66 @@ impl Chip8 {
         // by x errors, fetch-advance-decode-execute
 
         // decode logic, then execute logic
-        match Instruction::decode(opcode, pc) {
-            Ok(instruction) => self.execute(instruction),
-            Err(error) => eprintln!("{error}"),
-        }
+        let instruction = Instruction::decode(opcode, pc)?;
+
+        self.execute(instruction)?;
+
+        Ok(())
     }
 
     pub fn render(&self) {
         display::render(&self.display);
     }
+
+    fn write_to_memory(&mut self, index: usize, value: u8) -> Result<(), ExecutionError> {
+        if index >= self.memory.len() {
+            return Err(ExecutionError::MemoryOutOfBounds { index });
+        }
+        self.memory[index] = value;
+        Ok(())
+    }
+
+    fn read_memory(&self, index: usize) -> Result<u8, ExecutionError> {
+        if index >= self.memory.len() {
+            return Err(ExecutionError::MemoryOutOfBounds { index });
+        }
+        Ok(self.memory[index])
+    }
 }
+
+// creates types of errors that ExecutionError can hold (kind of like constructor)
+#[derive(Debug)]
+pub enum ExecutionError {
+    MemoryOutOfBounds { index: usize },
+    StackOverflow { stack_pointer: usize },
+    StackUnderflow { stack_pointer: usize },
+    Decode(DecodeError),
+}
+
+// turns type of error above into easier to understand messages
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ExecutionError::MemoryOutOfBounds { index } => {
+                write!(f, "Memory out of bounds for index {index}")
+            }
+            ExecutionError::StackOverflow { stack_pointer } => {
+                write!(
+                    f,
+                    "Stack Overflow, {stack_pointer} out of bounds for stack of len 16"
+                )
+            }
+            ExecutionError::StackUnderflow { stack_pointer } => {
+                write!(f, "Stack is empty at index {stack_pointer}")
+            }
+            ExecutionError::Decode(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<DecodeError> for ExecutionError {
+    fn from(e: DecodeError) -> Self {
+        ExecutionError::Decode(e)
+    }
+}
+impl std::error::Error for ExecutionError {}
