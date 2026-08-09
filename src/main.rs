@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // owned vs borrow here, we use &rom to signify this
 
-    machine.load_rom(&rom);
+    machine.load_rom(&rom)?;
 
     // we are 'borrowing' the data, i.e. not responsibile for its lifetime
     // without this, if we passed rom into a function once it was over it
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for _ in 0..20 {
         if let Err(e) = machine.cycle() {
-            eprint!("{e}");
+            eprintln!("{e}");
             break;
         }
         machine.render();

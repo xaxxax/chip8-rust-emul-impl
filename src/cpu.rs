@@ -64,14 +64,15 @@ impl Chip8 {
     // since we are taking in reference to values with pointer here in 'rom', must dereference to
     // get actual value and not the mem-address
 
-    pub fn load_rom(&mut self, rom: &[u8]) {
+    pub fn load_rom(&mut self, rom: &[u8]) -> Result<(), ExecutionError> {
         for (i, byte) in rom.iter().enumerate() {
-            self.memory[0x200 + i] = *byte;
+            self.write_to_memory(0x200 + i, *byte)?;
             // start at 0x200 manually here, since we are not in FDE
             // .loop, use PC when entering fetching stage and
             // increment by 2 each time because of grabbing memory
             // in 2-byte chunks
         }
+        Ok(())
     }
 
     fn fetch(&self) -> Result<u16, ExecutionError> {
